@@ -36,6 +36,7 @@ void safePrint(char* str);
 
 SemaphoreHandle_t xDone_a1;
 SemaphoreHandle_t xDone_b1;
+SemaphoreHandle_t xPrintMutex;
 
 int main(void)
 {
@@ -44,6 +45,8 @@ int main(void)
   
   xDone_a1 = xSemaphoreCreateBinary();
   xDone_b1 = xSemaphoreCreateBinary();
+  
+  xPrintMutex = xSemaphoreCreateMutex();
   
   vTaskStartScheduler();
   
@@ -101,9 +104,9 @@ void b2(void)
 
 void safePrint(char* str)
 {
-  portENTER_CRITICAL();
+  xSemaphoreTake(xPrintMutex, pdMS_TO_TICKS(100));
   
   printf("%s\n", str);
   
-  portEXIT_CRITICAL();
+  xSemaphoreGive(xPrintMutex);
 }
