@@ -19,7 +19,9 @@ Little Book of Semaphores Exc 3.8, Queue:
       in the other queue before they go up and dance.
       
       The dance "routine" is a function with an internal state that holds the string
-      representation of the pair of dancers.
+      representation of the pair of dancers and prints it out to console.
+      
+      Testing the book's solution...
 
 */
 #include "FreeRTOS.h"
@@ -34,7 +36,7 @@ Little Book of Semaphores Exc 3.8, Queue:
 #define FOLLOWER_COUNT  5
 #define MAX_RANDOM_DELAY_MS  5000
 #define MAX_DANCE_DELAY_MS  (MAX_RANDOM_DELAY_MS * 2)
-#define DELAY_TOLERANCE ((MAX_RANDOM_DELAY_MS) * 5)
+#define DELAY_TOLERANCE ((MAX_RANDOM_DELAY_MS) + 10000)
 
 // FreeRTOS objects
 SemaphoreHandle_t xDanceFloorMutex;
@@ -48,17 +50,16 @@ const char* const g_followers[FOLLOWER_COUNT] = {"a", "b", "c", "d", "e"};
 // Tasks
 void vLeader(void* pvParam);
 void vFollower(void* pvParam);
-void vDance(void);
 
 // Helper functions
-void vReadyToGoToDanceFloor(char* leader, char* follower);
 void vRandomDelay(void);
+void vDance(char* dancer);
 
 int main(void)
 {
   xDanceFloorMutex = xSemaphoreCreateMutex();
-  xADancerIsAvailable = xSemaphoreCreateBinary();
-  xALeaderIsAvailable = xSemaphoreCreateBinary();
+  xADancerIsAvailable = xSemaphoreCreateCounting(FOLLOWER_COUNT, 0);
+  xALeaderIsAvailable = xSemaphoreCreateCounting(LEADER_COUNT, 0);
   
   // create threads representing leaders
   for (UBaseType_t uLeader = 0; uLeader < LEADER_COUNT; uLeader++)
@@ -84,25 +85,27 @@ int main(void)
 // LEADERS
 void vLeader(void* pvParam)
 {
+  vTaskDelay(pdMS_TO_TICKS(5000));
   while(1)
   {
     // do preperation to start dancing
     vRandomDelay(); 
     
     // wait for a follower to give their hand
-    printf("%s is waiting to take hand\n", (char*)pvParam);
     if (xSemaphoreTake(xADancerIsAvailable, pdMS_TO_TICKS(DELAY_TOLERANCE)) == pdFAIL)
     {
       configASSERT(0);  // should have taken the hand by now!
     }
-    printf("%s has taken hand of a follower\n", (char*)pvParam);
-    
+        
     // take follower's hand
     xSemaphoreGive(xALeaderIsAvailable);
     
-    vReadyToGoToDanceFloor((char*)pvParam, NULL);
-    printf("%s is dancing\n", (char*)pvParam);
-
+    vDance((char*)pvParam);
+    break;
+  }
+  while(1)
+  {
+    vTaskDelay(pdMS_TO_TICKS(40));
   }
 }
 
@@ -116,19 +119,22 @@ void vFollower(void* pvParam)
     
     // bring out hand for a leader
     xSemaphoreGive(xADancerIsAvailable);
-    printf("%s is bringing out hand for leader\n", (char*)pvParam);
+    
+    printf("%s entering queue\n", (char*)pvParam);
 
     // take a leader's hand
     if (xSemaphoreTake(xALeaderIsAvailable, pdMS_TO_TICKS(DELAY_TOLERANCE)) == pdFAIL)
     {
       configASSERT(0);  // should have taken the hand by now!
     }
-    printf("%s hand has been taken by a leader\n", (char*)pvParam);
     
     // go to dance floor
-    vReadyToGoToDanceFloor(NULL, (char*)pvParam);
-    printf("%s is dancing\n", (char*)pvParam);
-
+    vDance((char*)pvParam);
+    break;
+  }
+  while(1)
+  {
+    vTaskDelay(pdMS_TO_TICKS(40));
   }
 }
 
@@ -139,62 +145,14 @@ void vRandomDelay(void)
   vTaskDelay(pdMS_TO_TICKS(rand() % MAX_RANDOM_DELAY_MS));
 }
 
-void vDance(void)
+void vDance(char* dancer)
 {
-  vTaskDelay(pdMS_TO_TICKS(MAX_DANCE_DELAY_MS));
-}
-
-void vReadyToGoToDanceFloor(char* leader, char* follower)
-{
-  // Function called by follower or dancer thread
-
-  // Static variables keep track of dancers ready to go to dance floor
-  static char dancers[2][10];
-  static UBaseType_t dancerCount = 0;
-
   if (xSemaphoreTake(xDanceFloorMutex, pdMS_TO_TICKS(DELAY_TOLERANCE)) == pdFAIL)
   {
     configASSERT(0); // should have been table to take mutex by now?
   }
   // Begin critical section
-  
-  // grab name of leader or follower
-  if (leader)
-  {
-    if (strcmp(dancers[0], "") != 0)
-    {
-      configASSERT(0); // we already have a leader ready...
-    }
-    strcpy(dancers[0], leader);
-    dancerCount++;
-  }
-  else if (follower)
-  {
-    if (strcmp(dancers[1], "") != 0)
-    {
-      configASSERT(0); // we already have a follower ready...
-    }
-    strcpy(dancers[1], follower);
-    dancerCount++;
-  }
-  else
-  {
-    configASSERT(0);  // expected either leader or follower
-  }
-
-  if (dancerCount >= 2)
-  {
-    if (dancerCount > 2)
-    {
-      configASSERT(0); // didn't expect more than 2 dancers
-    }
-
-    printf("%s takes the hand of %s and they both step onto the dance floor!\n", dancers[0], dancers[1]);
-
-    // reset internal state
-    dancerCount = 0;
-    memset(dancers, 0, 20);
-  }
+  printf("%s steps onto the dance floor!\n", dancer);
 
   // End of critical section
   xSemaphoreGive(xDanceFloorMutex);
