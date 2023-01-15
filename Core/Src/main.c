@@ -1,248 +1,201 @@
 /*
-Little Book of Semaphores Exc 3.6, Barrier:
+Little Book of Semaphores Exc 3.8, Queue:
 
   Puzzle: 
-    The synchronization requirement is that no thread executes critical point
-    until after all threads have executed rendezvous.
-    
-    You can assume that there are n threads and that this value is stored in a
-    variable, n, that is accessible from all threads.
-    
-    When the first n - 1 threads arrive they should block until the nth thread
-    arrives, at which point all the threads may proceed.
-
-    Thread
-    ------
-    <<randezvous>>
-    <<critical point>>  // all tasks must have finished their randezvous task
+      Semaphores can also be used to represent a queue. In this case, the initial value
+      is 0, and usually the code is written so that it is not possible to signal unless
+      there is a thread waiting, so the value of the semaphore is never positive.
+      For example, imagine that threads represent ballroom dancers and that two
+      kinds of dancers, leaders and followers, wait in two queues before entering the
+      dance floor. When a leader arrives, it checks to see if there is a follower waiting.
+      If so, they can both proceed. Otherwise it waits.
+      Similarly, when a follower arrives, it checks for a leader and either proceeds
+      or waits, accordingly.
+      Puzzle: write code for leaders and followers that enforces these constraints.
     
   Code:
-      The solution code below makes use of a "turnstile" pattern, where there
-      is a semaphore take and release in quick succession. 
-      In essence, once all tasks are ready (tracked by a global counter) 
-      one task will be unblocked, which will unblock the next one, and so on. 
-      It's called a turnstile as one thread is allowed to pass at a time, 
-      and it can be locked to stop all threads from passing.
+      This code models the Leader and Follower scenario mentioned above, where two queues exist,
+      one with Followers and other Leaders. Both have to wait until there is someone
+      in the other queue before they go up and dance.
       
-      A binary semaphore is used as it starts with a value of 0.
-      This keeps the turnstile locked, to begin with.
-      
-      A second turnstile starts as open with the use of a counting semaphore
-      initialised with a value of 0 with a maximum of 1.
-      
-      When turnstile 1 is open, turnstile 2 is closed, and vice versa. 
-      The turnstiles are opened only once task synchronisation is achieved
-      by checking the task counter. This means all tasks will perform
-      either the randezvous or the critical point, and never the two
-      mixed together.
-      
-      In a second iteration of this code, a counting semaphore will be used
-      for both turnstiles to signal multiple "unlocks" which the book
-      suggests will reduce the number of context switches in some situtions.
+      The dance "routine" is a function with an internal state that holds the string
+      representation of the pair of dancers.
 
 */
-
 #include "FreeRTOS.h"
 #include "task.h"
 #include "semphr.h"
-#include "event_groups.h"
+#include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-// Task prototype
-void vThreadA(void* pvParam);
-
-void someCriticalSection(char* taskName);
-void someRandezvous(char* taskName);
-void somePretendAction(void);
-
-// Variables for sync event
-uint8_t threadCounter;
-
-void incrementThreadCounterSafely(void);
-void decrementThreadCounterSafely(void);
+// Constants
+#define LEADER_COUNT  5
+#define FOLLOWER_COUNT  5
+#define MAX_RANDOM_DELAY_MS  5000
+#define MAX_DANCE_DELAY_MS  (MAX_RANDOM_DELAY_MS * 2)
+#define DELAY_TOLERANCE ((MAX_RANDOM_DELAY_MS) * 5)
 
 // FreeRTOS objects
-SemaphoreHandle_t xBarrier;
-SemaphoreHandle_t xSecondBarrier;
-SemaphoreHandle_t xThreadCounterLock;
+SemaphoreHandle_t xDanceFloorMutex;
+SemaphoreHandle_t xADancerIsAvailable;
+SemaphoreHandle_t xALeaderIsAvailable;
 
-void openFirstTurnstile(void);
-void openSecondTurnstile(void);
+// Strings for printing output
+const char* const g_leaders[LEADER_COUNT]     = {"1", "2", "3", "4", "5"};
+const char* const g_followers[FOLLOWER_COUNT] = {"a", "b", "c", "d", "e"};
 
-void waitAtFirstTurnstile(void);
-void waitAtSecondTurnstile(void);
+// Tasks
+void vLeader(void* pvParam);
+void vFollower(void* pvParam);
+void vDance(void);
 
-void giveMultipleSemaphore(SemaphoreHandle_t xSemphrHandle, UBaseType_t count);
-
-// Max threads that will be spawned
-#define MAX_THREADS 20
-#define MAX_TASK_DELAY_MS 2000
-
-// For printing task info
-static const char* const numbersLookup[] =
-{
-  "0","1","2","3","4","5","6","7","8","9","10","11","12","13","14","15","16","17","18","19"
-};
+// Helper functions
+void vReadyToGoToDanceFloor(char* leader, char* follower);
+void vRandomDelay(void);
 
 int main(void)
 {
-  for (int i = 0; i < MAX_THREADS; i++)
+  xDanceFloorMutex = xSemaphoreCreateMutex();
+  xADancerIsAvailable = xSemaphoreCreateBinary();
+  xALeaderIsAvailable = xSemaphoreCreateBinary();
+  
+  // create threads representing leaders
+  for (UBaseType_t uLeader = 0; uLeader < LEADER_COUNT; uLeader++)
   {
-    BaseType_t err = xTaskCreate(vThreadA, "A", 0x50, (void*)i, 1, NULL);
-    configASSERT(err == pdPASS);
+    xTaskCreate(vLeader, (void*)(g_leaders[uLeader]), 0x50, (void*)(g_leaders[uLeader]), 1, NULL);
   }
   
-  xBarrier = xSemaphoreCreateCounting(MAX_THREADS, 0);      // xBarrier is closed to begin with
-  xSecondBarrier = xSemaphoreCreateCounting(MAX_THREADS, 0); // xSecondBarrier is open to begin with
-  xThreadCounterLock =  xSemaphoreCreateMutex();  // to safely access global counter
+  // create threads representing followers
+  for (UBaseType_t uFollower = 0; uFollower < FOLLOWER_COUNT; uFollower++)
+  {
+    xTaskCreate(vFollower, (void*)(g_followers[uFollower]), 0x50, (void*)(g_followers[uFollower]), 1, NULL);
+  }
   
   vTaskStartScheduler();
   
-  for (;;)
+  while(1)
   {
-    printf("Shouldn't come here\n");
+    printf("Shouldn't come here!\n");
     while(1);
   }
 }
 
-void vThreadA(void* pvParam)
+// LEADERS
+void vLeader(void* pvParam)
 {
-  // Ensures that the Critical section is always performed
-  // once all threads have finished the randezvous with
-  // the help of the turnstile pattern. Uses two turnstiles.
-  char* taskStr = (void*)numbersLookup[(int)pvParam];
-  for (;;)
+  while(1)
   {
-    someRandezvous(taskStr);
+    // do preperation to start dancing
+    vRandomDelay(); 
     
-    incrementThreadCounterSafely();
-    
-    waitAtFirstTurnstile();
-    
-    someCriticalSection(taskStr);
-    
-    decrementThreadCounterSafely();
-    
-    waitAtSecondTurnstile();
-  }
-}
-
-void someCriticalSection(char* taskName)
-{
-  static uint8_t threadsInSection = 0;  
-  // Beginning of "critical section"
-  
-  // inner critical section, 1 allowed to print!
-  portENTER_CRITICAL();
-  threadsInSection += 1;
-  printf("Task [%s] entered. Threads in section = %u\n", taskName, threadsInSection);
-  portEXIT_CRITICAL();
-  
-  somePretendAction();
-  
-  // another inner critical section, 1 allowed to print
-  portENTER_CRITICAL();
-  threadsInSection -= 1;
-  printf("Task [%s] leaving. Threads in section = %u\n", taskName, threadsInSection);
-  portEXIT_CRITICAL();
-}
-
-void someRandezvous(char* taskName)
-{
-  portENTER_CRITICAL();
-  printf("Task [%s] performing randezvous.\n", taskName);
-  //somePretendAction();
-  portEXIT_CRITICAL();
-}
-
-void somePretendAction(void)
-{
-  // block a random amount of time- pretending to be some work
-  uint32_t msToWait = (rand() % MAX_TASK_DELAY_MS);
-  vTaskDelay(pdMS_TO_TICKS(msToWait));
-}
-
-void incrementThreadCounterSafely(void)
-{
-  if (xSemaphoreTake(xThreadCounterLock, pdMS_TO_TICKS(5000)) == pdFAIL)
-  {
-    configASSERT(0);
-  }
-  threadCounter++;
-  
-  if (threadCounter == MAX_THREADS)
-  {
-    openFirstTurnstile();
-  }
-  
-  xSemaphoreGive(xThreadCounterLock);
-}
-
-void decrementThreadCounterSafely(void)
-{
-  // take sem
-  if (xSemaphoreTake(xThreadCounterLock, pdMS_TO_TICKS(5000)) == pdFAIL)
-  {
-    configASSERT(0);
-  }
-  threadCounter--;
-  
-  if (threadCounter == 0)
-  {
-    openSecondTurnstile();
-  }
-  
-  // give
-  xSemaphoreGive(xThreadCounterLock);
-}
-
-void openFirstTurnstile(void)
-{
-  // all threadsare ready to pass the furst turnstile
-  // open the first turnstile - the secibd shall already be closed by now
-  if (xSemaphoreTake(xSecondBarrier, 1) != pdFAIL)
-  {
-    configASSERT(0);  // second barrier should be closed at this point
-  }
-  giveMultipleSemaphore(xBarrier, MAX_THREADS);  // xSemaphoreGive(xBarrier);
-}
-
-void openSecondTurnstile(void)
-{
-    // all threads have finished the critical section and are ready to pass the second turnstile
-    // open the second barrier - the first shall already be closed by now if all threads are through
-    // the first
-    if (xSemaphoreTake(xBarrier, 1) != pdFAIL)
+    // wait for a follower to give their hand
+    printf("%s is waiting to take hand\n", (char*)pvParam);
+    if (xSemaphoreTake(xADancerIsAvailable, pdMS_TO_TICKS(DELAY_TOLERANCE)) == pdFAIL)
     {
-      configASSERT(0);  //  First turnstile should be closed at this point
+      configASSERT(0);  // should have taken the hand by now!
     }
-    giveMultipleSemaphore(xSecondBarrier, MAX_THREADS);  // xSemaphoreGive(xSecondBarrier);
-}
+    printf("%s has taken hand of a follower\n", (char*)pvParam);
+    
+    // take follower's hand
+    xSemaphoreGive(xALeaderIsAvailable);
+    
+    vReadyToGoToDanceFloor((char*)pvParam, NULL);
+    printf("%s is dancing\n", (char*)pvParam);
 
-void waitAtFirstTurnstile(void)
-{
-  if (xSemaphoreTake(xBarrier, pdMS_TO_TICKS(5000)) == pdFAIL)
-  {
-    configASSERT(0);
-  }
-  //xSemaphoreGive(xBarrier);
-}
-
-void waitAtSecondTurnstile(void)
-{
-  if (xSemaphoreTake(xSecondBarrier, pdMS_TO_TICKS(5000)) == pdFAIL)
-  {
-    configASSERT(0);  // expect all tasks to be done by 5 seconds
-  }
-  //xSemaphoreGive(xSecondBarrier);
-}
-
-void giveMultipleSemaphore(SemaphoreHandle_t xSemphrHandle, UBaseType_t count)
-{
-  for (UBaseType_t i = 0; i < count; i++)
-  {
-    xSemaphoreGive(xSemphrHandle);
   }
 }
 
+// FOLLOWERS
+void vFollower(void* pvParam)
+{
+  while(1)
+  {
+    // do preperation to start dancing
+    vRandomDelay();  
+    
+    // bring out hand for a leader
+    xSemaphoreGive(xADancerIsAvailable);
+    printf("%s is bringing out hand for leader\n", (char*)pvParam);
+
+    // take a leader's hand
+    if (xSemaphoreTake(xALeaderIsAvailable, pdMS_TO_TICKS(DELAY_TOLERANCE)) == pdFAIL)
+    {
+      configASSERT(0);  // should have taken the hand by now!
+    }
+    printf("%s hand has been taken by a leader\n", (char*)pvParam);
+    
+    // go to dance floor
+    vReadyToGoToDanceFloor(NULL, (char*)pvParam);
+    printf("%s is dancing\n", (char*)pvParam);
+
+  }
+}
+
+// HELPER FUNCTIONS
+
+void vRandomDelay(void)
+{
+  vTaskDelay(pdMS_TO_TICKS(rand() % MAX_RANDOM_DELAY_MS));
+}
+
+void vDance(void)
+{
+  vTaskDelay(pdMS_TO_TICKS(MAX_DANCE_DELAY_MS));
+}
+
+void vReadyToGoToDanceFloor(char* leader, char* follower)
+{
+  // Function called by follower or dancer thread
+
+  // Static variables keep track of dancers ready to go to dance floor
+  static char dancers[2][10];
+  static UBaseType_t dancerCount = 0;
+
+  if (xSemaphoreTake(xDanceFloorMutex, pdMS_TO_TICKS(DELAY_TOLERANCE)) == pdFAIL)
+  {
+    configASSERT(0); // should have been table to take mutex by now?
+  }
+  // Begin critical section
+  
+  // grab name of leader or follower
+  if (leader)
+  {
+    if (strcmp(dancers[0], "") != 0)
+    {
+      configASSERT(0); // we already have a leader ready...
+    }
+    strcpy(dancers[0], leader);
+    dancerCount++;
+  }
+  else if (follower)
+  {
+    if (strcmp(dancers[1], "") != 0)
+    {
+      configASSERT(0); // we already have a follower ready...
+    }
+    strcpy(dancers[1], follower);
+    dancerCount++;
+  }
+  else
+  {
+    configASSERT(0);  // expected either leader or follower
+  }
+
+  if (dancerCount >= 2)
+  {
+    if (dancerCount > 2)
+    {
+      configASSERT(0); // didn't expect more than 2 dancers
+    }
+
+    printf("%s takes the hand of %s and they both step onto the dance floor!\n", dancers[0], dancers[1]);
+
+    // reset internal state
+    dancerCount = 0;
+    memset(dancers, 0, 20);
+  }
+
+  // End of critical section
+  xSemaphoreGive(xDanceFloorMutex);
+}
